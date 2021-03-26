@@ -3,24 +3,35 @@ package main
 import (
 	"flag"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/bwmarrin/discordgo"
+	_ "github.com/joho/godotenv/autoload"
 	"github.com/pion/rtp"
 	"github.com/pion/webrtc/v3/pkg/media"
 	"github.com/pion/webrtc/v3/pkg/media/oggwriter"
 )
 
 var (
+	Start     uint32 = 0
 	Token     string
 	ChannelID string
 	GuildID   string
+	Delta     uint
+	UsersMap  = map[int]string{}
 )
 
 func init() {
-	flag.StringVar(&Token, "t", "", "Bot Token")
-	flag.StringVar(&GuildID, "g", "", "Guild in which voice channel exists")
-	flag.StringVar(&ChannelID, "c", "", "Voice channel to connect to")
+	UsersMap = map[int]string{}
+	Token = os.Getenv("BOT_TOKEN")
+	GuildID = os.Getenv("GUILD_ID")
+	ChannelID = os.Getenv("CHANNEL_ID")
+
+	flag.StringVar(&Token, "t", Token, "Bot Token")
+	flag.StringVar(&GuildID, "g", GuildID, "Guild in which voice channel exists")
+	flag.StringVar(&ChannelID, "c", ChannelID, "Voice channel to connect to")
+	flag.UintVar(&Delta, "d", 20, "Duration of bot recording")
 	flag.Parse()
 }
 
@@ -37,6 +48,19 @@ func createPionRTPPacket(p *discordgo.Packet) *rtp.Packet {
 		Payload: p.Opus,
 	}
 }
+func handleConn(v *discordgo.VoiceConnection, vs *discordgo.VoiceSpeakingUpdate) {
+	UsersMap[vs.SSRC] = vs.UserID
+}
+
+func parseMap() map[string]string {
+	m := map[string]string{}
+	fmt.Printf("\"__START_\": %d\n", Start)
+	for key, value := range UsersMap {
+		m[fmt.Sprintf("%d", key)] = value
+		fmt.Printf("\"%d\": \"%s\"\n", key, value)
+	}
+	return m
+}
 
 func handleVoice(c chan *discordgo.Packet) {
 	files := make(map[uint32]media.Writer)
@@ -44,13 +68,17 @@ func handleVoice(c chan *discordgo.Packet) {
 		file, ok := files[p.SSRC]
 		if !ok {
 			var err error
-			file, err = oggwriter.New(fmt.Sprintf("%d.ogg", p.SSRC), 48000, 2)
+			if Start == 0 {
+				Start = p.Timestamp
+			}
+			file, err = oggwriter.New(fmt.Sprintf("%d_%d.ogg", p.SSRC, p.Timestamp), 48000, 2)
 			if err != nil {
 				fmt.Printf("failed to create file %d.ogg, giving up on recording: %v\n", p.SSRC, err)
 				return
 			}
 			files[p.SSRC] = file
 		}
+		fmt.Println(p.Timestamp)
 		// Construct pion RTP packet from DiscordGo's type.
 		rtp := createPionRTPPacket(p)
 		err := file.WriteRTP(rtp)
@@ -82,17 +110,25 @@ func main() {
 		return
 	}
 
+	// g, err := s.Guild(GuildID)
+	// if err != nil {
+	// 	fmt.Println("failed to get guild info:", err)
+	// }
+
 	v, err := s.ChannelVoiceJoin(GuildID, ChannelID, true, false)
 	if err != nil {
 		fmt.Println("failed to join voice channel:", err)
 		return
 	}
 
+	v.AddHandler(handleConn)
+
 	go func() {
-		time.Sleep(10 * time.Second)
+		time.Sleep(time.Duration(Delta) * time.Second)
 		close(v.OpusRecv)
+		parseMap()
 		v.Close()
 	}()
-
 	handleVoice(v.OpusRecv)
+	fmt.Println("END OF FILE")
 }
