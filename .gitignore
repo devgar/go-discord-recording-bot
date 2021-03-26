@@ -21,3 +21,6 @@
 main
 kotilla
 
+
+# audio files
+*.ogg
